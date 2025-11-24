@@ -13,9 +13,13 @@ print_help() {
   echo "                   gnome, xfce, kde, lxde, gnome-flashback, cinnamon, mate, lxqt"
   echo "  data_dir     - The working directory for the scripts. This defaults to ./data"
   echo "  arch         - The CPU architecture to build the shimboot image for. Set this to 'arm64' if you have an ARM Chromebook."
-  echo "  release      - Set this to either 'bookworm', 'trixie', or 'unstable' to build for Debian 12, 13, or unstable."
-  echo "  distro       - The Linux distro to use. This should be either 'debian', 'ubuntu', or 'alpine'."
+  echo "  release      - Set this to 'bookworm', 'trixie', 'unstable', or 'osaka' (Iridium 13.2)."
+  echo "  distro       - The Linux distro to use. This should be either 'debian', 'ubuntu', 'alpine', or 'iridium'."
   echo "  luks         - Set this argument to encrypt the rootfs partition."
+  echo "  shim_path    - Use an existing shim image instead of downloading it."
+  echo "  reco_path    - Use an existing recovery image instead of downloading it."
+  echo "  shim_url     - Manually provide a shim download URL (.zip or .bin)."
+  echo "  reco_url     - Manually provide a recovery download URL (.zip or .bin)."
 }
 
 assert_root
@@ -32,8 +36,26 @@ desktop="${args['desktop']-'xfce'}"
 data_dir="${args['data_dir']}"
 arch="${args['arch']-amd64}"
 release="${args['release']}"
-distro="${args['distro']-debian}"
+distro="${args['distro']}"
 luks="${args['luks']}"
+shim_url_override="${args['shim_url']}"
+reco_url_override="${args['reco_url']}"
+shim_path_override="${args['shim_path']}"
+reco_path_override="${args['reco_path']}"
+timezone="${args['timezone']}"
+user_fullname="${args['user_fullname']}"
+username_arg="${args['username']}"
+user_passwd_arg="${args['user_passwd']}"
+primary_repo="${args['primary_repo']}"
+primary_suite="${args['primary_suite']}"
+primary_components="${args['primary_components']}"
+primary_key="${args['primary_key']}"
+
+#default distro selection
+if [ "$release" = "osaka" ] && [ -z "$distro" ]; then
+  distro="iridium"
+fi
+distro="${distro:-debian}"
 
 #a list of all arm board names
 arm_boards="
@@ -66,12 +88,12 @@ elif [ "$kernel_arch" = "aarch64" ]; then
   host_arch="arm64"
 fi
 
-needed_deps="wget python3 unzip zip git debootstrap cpio binwalk pcregrep cgpt mkfs.ext4 mkfs.ext2 fdisk depmod findmnt lz4 pv cryptsetup"
+needed_deps="wget python3 unzip zip git debootstrap cpio binwalk pcregrep cgpt mkfs.ext4 mkfs.ext2 fdisk depmod findmnt lz4 pv cryptsetup gpg"
 if [ "$(check_deps "$needed_deps")" ]; then
   #install deps automatically on debian and ubuntu
   if [ -f "/etc/debian_version" ]; then
     print_title "attempting to install build deps"
-    apt-get install wget python3 unzip zip debootstrap cpio binwalk pcregrep cgpt kmod pv lz4 cryptsetup -y
+    apt-get install wget python3 unzip zip debootstrap cpio binwalk pcregrep cgpt kmod pv lz4 cryptsetup gpg -y
   fi
   assert_deps "$needed_deps"
 fi
@@ -108,14 +130,16 @@ else
 fi
 
 print_title "downloading list of recovery images"
-reco_url="$(wget -qO- --show-progress $boards_url | python3 -c '
+board_found=""
+reco_url="$reco_url_override"
+if [ ! "$reco_url" ] && [ ! "$reco_path_override" ]; then
+  reco_url="$(wget -qO- --show-progress $boards_url | python3 -c '
 import json, sys
 
 all_builds = json.load(sys.stdin)
 board_name = sys.argv[1]
 if not board_name in all_builds["builds"]:
-  print("Invalid board name: " + board_name, file=sys.stderr)
-  sys.exit(1)
+  sys.exit(0)
   
 board = all_builds["builds"][board_name]
 if "models" in board:
@@ -126,8 +150,23 @@ if "models" in board:
 
 reco_url = list(board["pushRecoveries"].values())[-1]
 print(reco_url)
-' $board)"
-print_info "found url: $reco_url"
+' $board || true)"
+fi
+
+if [ "$reco_url" ]; then
+  board_found="1"
+fi
+
+if [ ! "$reco_url" ] && [ "$reco_path_override" ]; then
+  print_info "using local recovery image at $reco_path_override"
+elif [ "$reco_url" ]; then
+  print_info "found url: $reco_url"
+elif [ -f "$reco_bin" ]; then
+  print_info "using existing recovery image at $reco_bin"
+else
+  print_error "could not locate recovery image for board '$board'. Provide reco_path= or reco_url= to continue."
+  exit 1
+fi
 
 shim_bin="$data_dir/shim_$board.bin"
 shim_zip="$data_dir/shim_$board.zip"
@@ -135,6 +174,14 @@ shim_dir="$data_dir/shim_${board}_chunks"
 reco_bin="$data_dir/reco_$board.bin"
 reco_zip="$data_dir/reco_$board.zip"
 mkdir -p "$data_dir"
+
+if [ "$shim_path_override" ]; then
+  shim_bin="$(realpath -m "$shim_path_override")"
+fi
+
+if [ "$reco_path_override" ]; then
+  reco_bin="$(realpath -m "$reco_path_override")"
+fi
 
 extract_zip() {
   local zip_path="$1"
@@ -168,10 +215,36 @@ download_and_unzip() {
   fi
 }
 
+download_file_or_zip() {
+  local url="$1"
+  local zip_path="$2"
+  local bin_path="$3"
+
+  if [[ "$url" =~ \.zip($|\?) ]]; then
+    download_and_unzip "$url" "$zip_path" "$bin_path"
+    return
+  fi
+
+  if [ -f "$bin_path" ]; then
+    return
+  fi
+
+  print_info "downloading $(basename "$bin_path")"
+  if [ ! "$quiet" ]; then
+    wget -q --show-progress "$url" -O "$bin_path" -c
+  else
+    wget -q "$url" -O "$bin_path" -c
+  fi
+}
+
 download_shim() {
   print_info "downloading shim file manifest"
   local boards_index="$(curl --no-progress-meter "https://cdn.cros.download/boards.txt")"
   local shim_url_path="$(echo "$boards_index" | grep "/$board/").manifest"
+  if [ ! "$shim_url_path" ]; then
+    print_error "could not find shim manifest for board '$board'. supply shim_path= or shim_url= to continue."
+    return 1
+  fi
   local shim_url_dir="$(dirname "$shim_url_path")"
   local shim_manifest="$(curl --no-progress-meter "https://cdn.cros.download/$shim_url_path")"
   local py_load_json="import json, sys; manifest = json.load(sys.stdin)"
@@ -215,6 +288,7 @@ download_shim() {
   if [ ! -f "$shim_bin" ]; then
     extract_zip "$shim_zip" "$shim_bin"
   fi
+  return 0
 }
 
 retry_cmd() {
@@ -225,14 +299,33 @@ retry_cmd() {
 }
 
 print_title "downloading recovery image"
-download_and_unzip "$reco_url" "$reco_zip" "$reco_bin"
+if [ "$reco_path_override" ] && [ ! -f "$reco_bin" ]; then
+  print_error "recovery image not found at $reco_bin"
+  exit 1
+fi
+
+if [ -f "$reco_bin" ]; then
+  print_info "using existing recovery image at $reco_bin"
+else
+  download_file_or_zip "$reco_url" "$reco_zip" "$reco_bin"
+fi
 
 print_title "downloading shim image"
-if [ ! -f "$shim_bin" ]; then
-  if [ "$shim_url" ]; then
-    download_and_unzip "$shim_url" "$shim_zip" "$shim_bin"
+if [ "$shim_path_override" ] && [ ! -f "$shim_bin" ]; then
+  print_error "shim image not found at $shim_bin"
+  exit 1
+fi
+
+if [ -f "$shim_bin" ]; then
+  print_info "using existing shim image at $shim_bin"
+else
+  if [ "$shim_url_override" ]; then
+    download_file_or_zip "$shim_url_override" "$shim_zip" "$shim_bin"
   else
-    download_shim "$shim_url" "$shim_zip" "$shim_bin"
+    if ! download_shim; then
+      print_error "could not download shim for board '$board'. supply shim_path= or shim_url=."
+      exit 1
+    fi
   fi
 fi
 
@@ -252,6 +345,8 @@ if [ ! "$rootfs_dir" ]; then
     release="${release:-noble}"
   elif [ "$distro" = "alpine" ]; then
     release="${release:-edge}"
+  elif [ "$distro" = "iridium" ]; then
+    release="${release:-osaka}"
   else
     print_error "invalid distro selection"
     exit 1
@@ -269,13 +364,33 @@ if [ ! "$rootfs_dir" ]; then
     fi
   fi
 
+  if [ "$distro" = "iridium" ]; then
+    username_arg="${username_arg:-fixcraft}"
+    user_passwd_arg="${user_passwd_arg:-fixcraft}"
+    user_fullname="${user_fullname:-FixCraft User}"
+    timezone="${timezone:-PST8PDT}"
+    primary_repo="${primary_repo:-https://ir.fixcraft.jp/iridium}"
+    primary_suite="${primary_suite:-$release}"
+    primary_components="${primary_components:-main}"
+    primary_key="${primary_key:-}"
+  fi
+
+  root_username="${username_arg:-user}"
+  root_user_pass="${user_passwd_arg:-user}"
+
   ./build_rootfs.sh $rootfs_dir $release \
     custom_packages=$desktop_package \
-    hostname=shimboot-$board \
-    username=user \
-    user_passwd=user \
+    hostname=fixcraft \
+    username=$root_username \
+    user_passwd=$root_user_pass \
     arch=$arch \
-    distro=$distro
+    distro=$distro \
+    timezone="$timezone" \
+    user_fullname="$user_fullname" \
+    primary_repo="$primary_repo" \
+    primary_suite="$primary_suite" \
+    primary_components="$primary_components" \
+    primary_key="$primary_key"
 fi
 
 print_title "patching $distro rootfs"

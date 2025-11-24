@@ -1,3 +1,4 @@
 /bootloader/bin/cryptsetup
 /data
 /*.bin
+/iridium-repo2/*

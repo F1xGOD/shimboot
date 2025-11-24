@@ -28,6 +28,11 @@ quiet="${args['quiet']}"
 arch="${args['arch']-amd64}"
 bootloader_part_name="${args['name']}"
 luks_enabled="${args['luks']}"
+rootfs_label="shimboot_rootfs:${bootloader_part_name}"
+
+if [ "$bootloader_part_name" = "iridium" ]; then
+  rootfs_label="fixcraft_rootfs-iridium"
+fi
 
 if [ "$luks_enabled" ]; then
   while true; do
@@ -63,7 +68,7 @@ rootfs_size="$(du -sm $rootfs_dir | cut -f 1)"
 rootfs_part_size="$(($rootfs_size * 12 / 10 + 5))"
 #create a 20mb bootloader partition
 #rootfs partition is 20% larger than its contents
-create_image "$output_path" 20 "$rootfs_part_size" "$bootloader_part_name"
+create_image "$output_path" 20 "$rootfs_part_size" "$bootloader_part_name" "$rootfs_label"
 
 print_info "creating loop device for the image"
 image_loop="$(create_loop ${output_path})"

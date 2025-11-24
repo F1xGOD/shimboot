@@ -20,6 +20,10 @@ partition_disk() {
   local image_path=$(realpath -m "${1}")
   local bootloader_size="$2"
   local rootfs_name="$3"
+  local rootfs_label="$4"
+  if [ ! "$rootfs_label" ]; then
+    rootfs_label="shimboot_rootfs:${rootfs_name}"
+  fi
   #create partition table with fdisk
   ( 
     echo g #new gpt disk label
@@ -56,7 +60,7 @@ partition_disk() {
     echo x #enter expert mode
     echo n #change the partition name
     echo #accept default partition number
-    echo "shimboot_rootfs:$rootfs_name" #set partition name
+    echo "$rootfs_label" #set partition name
     echo r #return to normal more
 
     #write changes
@@ -154,12 +158,13 @@ create_image() {
   local bootloader_size="$2"
   local rootfs_size="$3"
   local rootfs_name="$4"
+  local rootfs_label="$5"
   
   #stateful + kernel + bootloader + rootfs
   local total_size=$((1 + 32 + $bootloader_size + $rootfs_size))
   rm -rf "${image_path}"
   fallocate -l "${total_size}M" "${image_path}"
-  partition_disk $image_path $bootloader_size $rootfs_name
+  partition_disk $image_path $bootloader_size $rootfs_name "$rootfs_label"
 }
 
 patch_initramfs() {
