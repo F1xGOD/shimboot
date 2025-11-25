@@ -94,7 +94,7 @@ A possible workaround for audio issues is using a USB sound card. Certain "USB t
 - Support for more distros (Ubuntu and Arch maybe)
 - Eliminate binwalk dependency
 - Get audio to work on dedede
-- Get kexec working
+- Get kexec working (kernel upgrade to 6.12+ - see `KERNEL_UPGRADE_ANALYSIS.md` for detailed plan)
 
 PRs and contributions are welcome to help implement these features.
 
@@ -168,6 +168,32 @@ There is also experimental support for Alpine Linux. The Alpine disk image is ab
 ```bash
 sudo ./build_complete.sh dedede distro=alpine
 ```
+
+#### What kernel version does Shimboot use? Can I upgrade to a newer kernel?
+Shimboot uses the kernel from the Chrome OS RMA shim, which is typically Linux 4.14.x for most boards. The kernel version cannot be directly changed because it comes from Google's RMA shim images.
+
+**Why can't I just replace the kernel?**
+- Chrome OS uses a special verified boot process that requires a specifically formatted and signed kernel
+- Modifying the firmware would defeat Shimboot's main advantage (works on enrolled devices without firmware modification)
+- The Chrome OS kernel includes board-specific drivers and firmware
+
+**Kernel versions by board:**
+- Most boards: 4.14.x or 4.19.x
+- Older boards (reks, kefka): 3.18.x or earlier
+- Some newer boards: 5.4.x, 5.10.x, or 5.15.x
+
+**Limitations due to old kernel:**
+- Audio doesn't work on most devices
+- Suspend and swap are disabled
+- Some GPU features require mesa-amber drivers
+
+**Future: Kexec support**
+We are exploring using kexec to boot into a newer kernel (like 6.12) after the Chrome OS kernel starts. This would provide:
+- Modern kernel features
+- Better hardware support
+- Improved audio support
+
+This is a complex feature currently in the planning stage. See `KERNEL_UPGRADE_ANALYSIS.md` and `docs/KEXEC_IMPLEMENTATION.md` for technical details.
 
 #### How can I install a desktop environment other than XFCE?
 You can pass the `desktop` argument to the `build_complete.sh` script, like this:
